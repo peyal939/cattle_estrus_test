@@ -1,0 +1,27 @@
+# FastAPI & Server
+fastapi
+uvicorn[standard]
+python-multipart
+
+# MongoDB
+motor
+pymongo
+
+# Authentication
+python-jose[cryptography]
+bcrypt
+
+# Data Processing
+pandas
+numpy
+scikit-learn
+
+# Configuration
+python-dotenv
+pydantic-settings
+
+# Templates
+jinja2
+
+# Timezone
+pytz==2024.1
