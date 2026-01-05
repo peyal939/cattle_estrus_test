@@ -1,0 +1,1027 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>🐄 Cattle Estrus Detection Dashboard</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        .estrus-alert { animation: pulse 2s infinite; }
+        @keyframes pulse {
+            0%, 100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.7); }
+            50% { box-shadow: 0 0 0 10px rgba(239, 68, 68, 0); }
+        }
+        .activity-resting { background-color: #8b5cf6; }
+        .activity-eating { background-color: #22c55e; }
+        .activity-ruminating { background-color: #3b82f6; }
+        .activity-walking { background-color: #eab308; }
+        .ws-connected { color: #22c55e; }
+        .ws-disconnected { color: #ef4444; }
+    </style>
+</head>
+<body class="bg-gray-100 min-h-screen">
+    <!-- Navigation -->
+    <nav class="bg-green-700 text-white p-4 shadow-lg">
+        <div class="container mx-auto flex justify-between items-center">
+            <div class="flex items-center space-x-4">
+                <h1 class="text-2xl font-bold">🐄 Cattle Estrus Detection</h1>
+                <span class="text-sm bg-green-600 px-2 py-1 rounded">BST (UTC+6)</span>
+            </div>
+            <div class="flex items-center space-x-4">
+                <span id="ws-status" class="text-sm flex items-center">
+                    <span id="ws-indicator" class="w-2 h-2 rounded-full bg-red-500 mr-2"></span>
+                    <span id="ws-text">Disconnected</span>
+                </span>
+                <span id="current-time" class="text-sm"></span>
+                <span id="user-info" class="text-sm font-medium"></span>
+                <button onclick="openSettings()" class="bg-green-600 hover:bg-green-500 px-4 py-2 rounded transition">
+                    ⚙️ Settings
+                </button>
+                <button onclick="logout()" class="bg-red-600 hover:bg-red-500 px-4 py-2 rounded transition">
+                    Logout
+                </button>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Main Content -->
+    <main class="container mx-auto p-6">
+        <!-- Estrus Alert Banner -->
+        <div id="estrus-alert-banner" class="hidden bg-red-100 border-l-4 border-red-500 text-red-700 p-4 mb-6 rounded-lg estrus-alert">
+            <div class="flex items-center">
+                <span class="text-2xl mr-3">🚨</span>
+                <div>
+                    <p class="font-bold">ESTRUS DETECTED!</p>
+                    <p id="estrus-alert-details"></p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Tag Selector & Controls -->
+        <div class="bg-white rounded-lg shadow p-6 mb-6">
+            <div class="flex flex-wrap items-center gap-4">
+                <div>
+                    <label class="font-semibold text-gray-700">Select Tag:</label>
+                    <select id="tag-select" onchange="onTagSelectionChanged()" class="ml-2 border rounded px-4 py-2 w-48 focus:ring-2 focus:ring-green-500">
+                        <option value="">All Tags</option>
+                        {% for tag_id in tag_ids %}
+                        <option value="{{ tag_id }}">Tag {{ tag_id }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div>
+                    <label class="font-semibold text-gray-700">From:</label>
+                    <input type="date" id="start-date" class="ml-2 border rounded px-4 py-2 focus:ring-2 focus:ring-green-500">
+                </div>
+                <div>
+                    <label class="font-semibold text-gray-700">To:</label>
+                    <input type="date" id="end-date" class="ml-2 border rounded px-4 py-2 focus:ring-2 focus:ring-green-500">
+                </div>
+                <div>
+                    <label class="font-semibold text-gray-700">Analysis Days:</label>
+                    <input type="number" id="days-input" value="30" min="1" max="365" 
+                           class="ml-2 border rounded px-4 py-2 w-24 focus:ring-2 focus:ring-green-500">
+                </div>
+                <button onclick="loadTagAnalysis()" class="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-500 transition">
+                    🔄 Refresh
+                </button>
+                <div class="ml-auto text-sm text-gray-500">
+                    Last updated: <span id="last-updated">-</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- All Tags View -->
+        <div id="all-tags-view" class="hidden bg-white rounded-lg shadow p-6 mb-6">
+            <div class="flex items-center justify-between mb-4">
+                <h3 class="font-semibold">All Tags Summary</h3>
+                <div class="text-sm text-gray-500">Click a row to focus on that tag</div>
+            </div>
+            <div class="overflow-x-auto">
+                <table class="min-w-full table-auto">
+                    <thead class="bg-gray-50">
+                        <tr>
+                            <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Tag</th>
+                            <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Estrus</th>
+                            <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Detected On</th>
+                            <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Max Activity</th>
+                            <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Avg Activity</th>
+                            <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Avg Activity (raw)</th>
+                            <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Walking %</th>
+                            <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Battery</th>
+                            <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Signal</th>
+                            <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Last Reading</th>
+                        </tr>
+                    </thead>
+                    <tbody id="all-tags-table" class="divide-y divide-gray-200"></tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- Single Tag View -->
+        <div id="single-tag-view">
+
+        <!-- Summary Cards -->
+        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-6 gap-6 mb-6">
+            <div class="bg-white rounded-lg shadow p-6">
+                <h3 class="text-gray-500 text-sm">Total Days</h3>
+                <p id="stat-total-days" class="text-3xl font-bold text-blue-600">-</p>
+            </div>
+            <div class="bg-white rounded-lg shadow p-6">
+                <h3 class="text-gray-500 text-sm">Avg Activity Score</h3>
+                <p id="stat-avg-activity" class="text-3xl font-bold text-green-600">-</p>
+            </div>
+            <div class="bg-white rounded-lg shadow p-6">
+                <h3 class="text-gray-500 text-sm">Avg Activity (raw)</h3>
+                <p id="stat-avg-activity-raw" class="text-3xl font-bold text-green-600">-</p>
+            </div>
+            <div class="bg-white rounded-lg shadow p-6">
+                <h3 class="text-gray-500 text-sm">Walking %</h3>
+                <p id="stat-walking" class="text-3xl font-bold text-yellow-600">-</p>
+            </div>
+            <div class="bg-white rounded-lg shadow p-6">
+                <h3 class="text-gray-500 text-sm">Resting %</h3>
+                <p id="stat-resting" class="text-3xl font-bold text-purple-600">-</p>
+            </div>
+            <div class="bg-white rounded-lg shadow p-6">
+                <h3 class="text-gray-500 text-sm">Current Activity</h3>
+                <p id="stat-current-activity" class="text-2xl font-bold text-gray-700">-</p>
+            </div>
+        </div>
+
+        <!-- Device Info Cards -->
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-6">
+            <div class="bg-white rounded-lg shadow p-6">
+                <h3 class="text-gray-500 text-sm mb-2">🔋 Battery Level</h3>
+                <div class="flex items-center">
+                    <div class="w-full bg-gray-200 rounded-full h-4 mr-3">
+                        <div id="battery-bar" class="bg-green-500 h-4 rounded-full transition-all" style="width: 0%"></div>
+                    </div>
+                    <span id="battery-level" class="font-bold">--%</span>
+                </div>
+            </div>
+            <div class="bg-white rounded-lg shadow p-6">
+                <h3 class="text-gray-500 text-sm mb-2">📡 Signal Strength</h3>
+                <p id="signal-strength" class="text-2xl font-bold text-blue-600">-- dBm</p>
+            </div>
+            <div class="bg-white rounded-lg shadow p-6">
+                <h3 class="text-gray-500 text-sm mb-2">🕐 Last Reading</h3>
+                <p id="last-reading-time" class="text-lg font-medium text-gray-700">--</p>
+            </div>
+        </div>
+
+        <!-- Charts -->
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
+            <div class="bg-white rounded-lg shadow p-6">
+                <h3 class="font-semibold mb-4">📈 Activity Score Over Time</h3>
+                <canvas id="activity-chart"></canvas>
+            </div>
+            <div class="bg-white rounded-lg shadow p-6">
+                <h3 class="font-semibold mb-4">📊 Daily Activity Breakdown</h3>
+                <canvas id="breakdown-chart"></canvas>
+            </div>
+        </div>
+
+        <!-- Temperature Chart -->
+        <div class="bg-white rounded-lg shadow p-6 mb-6">
+            <h3 class="font-semibold mb-4">🌡️ Temperature Trends</h3>
+            <canvas id="temperature-chart"></canvas>
+        </div>
+
+        <!-- Data Table -->
+        <div class="bg-white rounded-lg shadow p-6">
+            <h3 class="font-semibold mb-4">📋 Daily Data</h3>
+            <div class="overflow-x-auto">
+                <table class="min-w-full table-auto">
+                    <thead class="bg-gray-50">
+                        <tr>
+                            <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Date</th>
+                            <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Activity Score</th>
+                            <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Activity (raw)</th>
+                            <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Resting</th>
+                            <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Eating</th>
+                            <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Ruminating</th>
+                            <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Walking</th>
+                            <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Estrus</th>
+                        </tr>
+                    </thead>
+                    <tbody id="data-table" class="divide-y divide-gray-200"></tbody>
+                </table>
+            </div>
+        </div>
+
+        </div>
+    </main>
+
+    <!-- Settings Modal -->
+    <div id="settings-modal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+        <div class="bg-white rounded-lg p-6 w-full max-w-md mx-4">
+            <div class="flex justify-between items-center mb-4">
+                <h2 class="text-xl font-bold">⚙️ Analysis Settings</h2>
+                <button onclick="closeSettings()" class="text-gray-500 hover:text-gray-700">✕</button>
+            </div>
+            <div class="space-y-4">
+                <div>
+                    <label class="block text-sm font-medium text-gray-700">WebSocket Refresh Interval (seconds)</label>
+                    <input type="number" id="setting-interval" class="mt-1 border rounded w-full px-3 py-2" 
+                           value="{{ settings.ws_refresh_interval }}">
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-700">Rolling Activity Days</label>
+                    <input type="number" id="setting-rolling" class="mt-1 border rounded w-full px-3 py-2"
+                           value="{{ settings.rolling_activity_days }}">
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-700">Estrus Baseline Days</label>
+                    <input type="number" id="setting-baseline" class="mt-1 border rounded w-full px-3 py-2"
+                           value="{{ settings.estrus_baseline_days }}">
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-700">Walking Threshold</label>
+                    <input type="number" step="0.01" id="setting-walking" class="mt-1 border rounded w-full px-3 py-2"
+                           value="{{ settings.walking_threshold }}">
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-700">Dominance Ratio Threshold</label>
+                    <input type="number" step="0.01" id="setting-dominance" class="mt-1 border rounded w-full px-3 py-2"
+                           value="{{ settings.dominance_ratio_threshold }}">
+                </div>
+            </div>
+            <div class="flex justify-end space-x-2 mt-6">
+                <button onclick="closeSettings()" class="px-4 py-2 border rounded hover:bg-gray-50">Cancel</button>
+                <button onclick="saveSettings()" class="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-500">Save</button>
+            </div>
+            <p id="settings-error" class="hidden text-red-500 text-sm mt-2"></p>
+        </div>
+    </div>
+
+    <!-- User Management Modal (Admin Only) -->
+    <div id="users-modal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+        <div class="bg-white rounded-lg p-6 w-full max-w-2xl mx-4">
+            <div class="flex justify-between items-center mb-4">
+                <h2 class="text-xl font-bold">👥 User Management</h2>
+                <button onclick="closeUsersModal()" class="text-gray-500 hover:text-gray-700">✕</button>
+            </div>
+            
+            <!-- Add User Form -->
+            <div class="bg-gray-50 p-4 rounded-lg mb-4">
+                <h3 class="font-medium mb-3">Add New User</h3>
+                <div class="grid grid-cols-2 gap-4">
+                    <input type="text" id="new-username" placeholder="Username" class="border rounded px-3 py-2">
+                    <input type="password" id="new-password" placeholder="Password" class="border rounded px-3 py-2">
+                    <input type="text" id="new-fullname" placeholder="Full Name" class="border rounded px-3 py-2">
+                    <select id="new-role" class="border rounded px-3 py-2">
+                        <option value="user">User</option>
+                        <option value="admin">Admin</option>
+                    </select>
+                </div>
+                <button onclick="createUser()" class="mt-3 bg-green-600 text-white px-4 py-2 rounded hover:bg-green-500">
+                    Add User
+                </button>
+            </div>
+            
+            <!-- Users List -->
+            <div id="users-list" class="space-y-2"></div>
+        </div>
+    </div>
+
+    <script>
+        // ==============================
+        // AUTHENTICATION
+        // ==============================
+        const token = localStorage.getItem('access_token');
+        const user = JSON.parse(localStorage.getItem('user') || '{}');
+        
+        if (!token) {
+            window.location.href = '/login';
+        }
+        
+        // Set user info
+        document.getElementById('user-info').textContent = `${user.username} (${user.role})`;
+        
+        function logout() {
+            localStorage.removeItem('access_token');
+            localStorage.removeItem('user');
+            window.location.href = '/login';
+        }
+        
+        function getAuthHeaders() {
+            return {
+                'Authorization': `Bearer ${token}`,
+                'Content-Type': 'application/json'
+            };
+        }
+
+        // ==============================
+        // CHARTS
+        // ==============================
+        let activityChart = null;
+        let breakdownChart = null;
+        let temperatureChart = null;
+
+        // ==============================
+        // WEBSOCKET
+        // ==============================
+        let ws = null;
+        let wsReconnectTimer = null;
+        let knownTagIds = [];
+        let subscribedTags = new Set();
+        let currentDisplayedTag = '';  // Track which tag is currently being displayed
+
+        function wsSend(obj) {
+            try {
+                if (!ws || ws.readyState !== WebSocket.OPEN) return;
+                ws.send(JSON.stringify(obj));
+            } catch (e) {
+                // ignore
+            }
+        }
+
+        function subscribeTag(tagId) {
+            const id = String(tagId || '');
+            if (!id) return;
+            if (subscribedTags.has(id)) return;
+            wsSend({ type: 'subscribe', tag_id: id });
+            subscribedTags.add(id);
+        }
+
+        function unsubscribeTag(tagId) {
+            const id = String(tagId || '');
+            if (!id) return;
+            if (!subscribedTags.has(id)) return;
+            wsSend({ type: 'unsubscribe', tag_id: id });
+            subscribedTags.delete(id);
+        }
+
+        function updateWsSubscriptions() {
+            if (!ws || ws.readyState !== WebSocket.OPEN) return;
+
+            const selectedTag = String(document.getElementById('tag-select').value || '');
+
+            if (!selectedTag) {
+                // All Tags: subscribe to every known tag
+                const target = new Set((knownTagIds || []).map(String));
+
+                for (const existing of Array.from(subscribedTags)) {
+                    if (!target.has(existing)) unsubscribeTag(existing);
+                }
+                for (const t of Array.from(target)) subscribeTag(t);
+            } else {
+                // Single tag: subscribe only to that tag
+                for (const existing of Array.from(subscribedTags)) {
+                    if (existing !== selectedTag) unsubscribeTag(existing);
+                }
+                subscribeTag(selectedTag);
+            }
+        }
+
+        function onTagSelectionChanged() {
+            const selectedTag = document.getElementById('tag-select').value || '';
+            currentDisplayedTag = selectedTag;  // Update immediately before any async operations
+            updateWsSubscriptions();
+            loadTagAnalysis();
+        }
+
+        function connectWebSocket() {
+            if (!token) return;
+
+            // Ensure only one active socket and one reconnect timer
+            if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
+                return;
+            }
+            if (wsReconnectTimer) {
+                clearTimeout(wsReconnectTimer);
+                wsReconnectTimer = null;
+            }
+
+            const wsUrl = `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/ws?token=${encodeURIComponent(token)}`;
+
+            const socket = new WebSocket(wsUrl);
+            ws = socket;
+
+            socket.onopen = () => {
+                console.log('WebSocket connected');
+                updateWsStatus(true);
+                updateWsSubscriptions();
+            };
+            
+            socket.onmessage = (event) => {
+                const message = JSON.parse(event.data);
+                handleWsMessage(message);
+            };
+            
+            socket.onclose = () => {
+                console.log('WebSocket disconnected');
+                if (ws === socket) {
+                    updateWsStatus(false);
+                    ws = null;
+                }
+
+                // Reconnect after 5 seconds
+                if (!wsReconnectTimer) {
+                    wsReconnectTimer = setTimeout(() => {
+                        wsReconnectTimer = null;
+                        console.log('Attempting to reconnect...');
+                        connectWebSocket();
+                    }, 5000);
+                }
+            };
+            
+            socket.onerror = (error) => {
+                console.error('WebSocket error:', error);
+            };
+        }
+
+        function updateWsStatus(connected) {
+            const indicator = document.getElementById('ws-indicator');
+            const text = document.getElementById('ws-text');
+            
+            if (connected) {
+                indicator.classList.remove('bg-red-500');
+                indicator.classList.add('bg-green-500');
+                text.textContent = 'Connected';
+            } else {
+                indicator.classList.remove('bg-green-500');
+                indicator.classList.add('bg-red-500');
+                text.textContent = 'Disconnected';
+            }
+        }
+
+        function handleWsMessage(message) {
+            console.log('WS Message:', message.type);
+            
+            switch (message.type) {
+                case 'connected':
+                    console.log('WebSocket authenticated:', message.data);
+                    break;
+                    
+                case 'update':
+                    // Use currentDisplayedTag instead of reading from DOM to avoid race conditions
+                    const msgTag = String(message.data?.tag_id ?? '');
+                    if (!currentDisplayedTag) {
+                        // All Tags view - update the row
+                        updateAllTagsRow(message.data);
+                    } else if (currentDisplayedTag === msgTag) {
+                        // Single tag view - only update if it matches the currently displayed tag
+                        updateDashboard(message.data);
+                    }
+                    // Otherwise, ignore this update (it's for a different tag)
+                    break;
+                    
+                case 'alert':
+                    // Do not show intrusive alerts; estrus info is visible in the All Tags table
+                    break;
+                    
+                case 'summary':
+                    // Update tag list if needed
+                    break;
+                    
+                case 'pong':
+                    console.log('Pong received');
+                    break;
+            }
+        }
+
+        function showEstrusAlert(data) {
+            // Deprecated: keep function to avoid breaking calls, but do nothing.
+            // Estrus status is displayed in the All Tags Summary table.
+        }
+
+        // ==============================
+        // DATA LOADING
+        // ==============================
+        function setViewMode(allTags) {
+            const allTagsView = document.getElementById('all-tags-view');
+            const singleTagView = document.getElementById('single-tag-view');
+
+            if (allTags) {
+                allTagsView.classList.remove('hidden');
+                singleTagView.classList.add('hidden');
+            } else {
+                allTagsView.classList.add('hidden');
+                singleTagView.classList.remove('hidden');
+            }
+        }
+
+        function renderAllTagsTable(analyses) {
+            const tbody = document.getElementById('all-tags-table');
+            tbody.innerHTML = '';
+
+            (analyses || []).forEach((a) => {
+                const tr = document.createElement('tr');
+                tr.className = 'hover:bg-gray-50 cursor-pointer';
+                tr.dataset.tagId = a.tag_id;
+
+                const estrusText = a.estrus_detected ? 'YES' : 'NO';
+                const estrusClass = a.estrus_detected ? 'text-red-600 font-semibold' : 'text-gray-600';
+                const detectedOn = a.estrus_detected ? (a.estrus_date || '-') : '-';
+
+                const maxAct = a.summary?.max_activity_score;
+                const avgAct = a.summary?.avg_activity_score;
+                const avgActRaw = a.summary?.avg_activity_score_raw;
+                const walkFrac = a.summary?.avg_walking_fraction;
+
+                const battery = (a.battery_level !== null && a.battery_level !== undefined) ? `${a.battery_level}%` : '--';
+                const signal = (a.signal_strength !== null && a.signal_strength !== undefined) ? `${a.signal_strength} dBm` : '--';
+                const lastReading = a.last_reading_time || '--';
+
+                tr.innerHTML = `
+                    <td class="px-4 py-3 font-medium text-gray-800">Tag ${a.tag_id}</td>
+                    <td class="px-4 py-3 ${estrusClass}">${estrusText}</td>
+                    <td class="px-4 py-3 text-gray-700">${detectedOn}</td>
+                    <td class="px-4 py-3 text-gray-700">${(maxAct !== null && maxAct !== undefined) ? Number(maxAct).toFixed(2) : '-'}</td>
+                    <td class="px-4 py-3 text-gray-700">${(avgAct !== null && avgAct !== undefined) ? Number(avgAct).toFixed(2) : '-'}</td>
+                    <td class="px-4 py-3 text-gray-700">${(avgActRaw !== null && avgActRaw !== undefined) ? Number(avgActRaw).toFixed(2) : '-'}</td>
+                    <td class="px-4 py-3 text-gray-700">${(walkFrac !== null && walkFrac !== undefined) ? (Number(walkFrac) * 100).toFixed(1) + '%' : '-'}</td>
+                    <td class="px-4 py-3 text-gray-700">${battery}</td>
+                    <td class="px-4 py-3 text-gray-700">${signal}</td>
+                    <td class="px-4 py-3 text-gray-700">${lastReading}</td>
+                `;
+
+                tr.addEventListener('click', () => {
+                    const select = document.getElementById('tag-select');
+                    select.value = a.tag_id;
+                    onTagSelectionChanged();
+                });
+
+                tbody.appendChild(tr);
+            });
+        }
+
+        function updateAllTagsRow(analysis) {
+            const tbody = document.getElementById('all-tags-table');
+            const existing = tbody.querySelector(`tr[data-tag-id="${analysis.tag_id}"]`);
+            if (!existing) return;
+
+            const estrusText = analysis.estrus_detected ? 'YES' : 'NO';
+            const estrusClass = analysis.estrus_detected ? 'text-red-600 font-semibold' : 'text-gray-600';
+            const detectedOn = analysis.estrus_detected ? (analysis.estrus_date || '-') : '-';
+
+            const maxAct = analysis.summary?.max_activity_score;
+            const avgAct = analysis.summary?.avg_activity_score;
+            const avgActRaw = analysis.summary?.avg_activity_score_raw;
+            const walkFrac = analysis.summary?.avg_walking_fraction;
+
+            const battery = (analysis.battery_level !== null && analysis.battery_level !== undefined) ? `${analysis.battery_level}%` : '--';
+            const signal = (analysis.signal_strength !== null && analysis.signal_strength !== undefined) ? `${analysis.signal_strength} dBm` : '--';
+            const lastReading = analysis.last_reading_time || '--';
+
+            existing.innerHTML = `
+                <td class="px-4 py-3 font-medium text-gray-800">Tag ${analysis.tag_id}</td>
+                <td class="px-4 py-3 ${estrusClass}">${estrusText}</td>
+                <td class="px-4 py-3 text-gray-700">${detectedOn}</td>
+                <td class="px-4 py-3 text-gray-700">${(maxAct !== null && maxAct !== undefined) ? Number(maxAct).toFixed(2) : '-'}</td>
+                <td class="px-4 py-3 text-gray-700">${(avgAct !== null && avgAct !== undefined) ? Number(avgAct).toFixed(2) : '-'}</td>
+                <td class="px-4 py-3 text-gray-700">${(avgActRaw !== null && avgActRaw !== undefined) ? Number(avgActRaw).toFixed(2) : '-'}</td>
+                <td class="px-4 py-3 text-gray-700">${(walkFrac !== null && walkFrac !== undefined) ? (Number(walkFrac) * 100).toFixed(1) + '%' : '-'}</td>
+                <td class="px-4 py-3 text-gray-700">${battery}</td>
+                <td class="px-4 py-3 text-gray-700">${signal}</td>
+                <td class="px-4 py-3 text-gray-700">${lastReading}</td>
+            `;
+        }
+
+        function setTagOptions(tagIds) {
+            const select = document.getElementById('tag-select');
+            const current = select.value;
+
+            knownTagIds = (tagIds || []).map(String);
+
+            select.innerHTML = '';
+
+            const allOpt = document.createElement('option');
+            allOpt.value = '';
+            allOpt.textContent = 'All Tags';
+            select.appendChild(allOpt);
+
+            (tagIds || []).forEach((tagId) => {
+                const opt = document.createElement('option');
+                opt.value = tagId;
+                opt.textContent = `Tag ${tagId}`;
+                select.appendChild(opt);
+            });
+
+            if (current && Array.from(select.options).some(o => o.value === current)) {
+                select.value = current;
+            }
+        }
+
+        async function refreshTags() {
+            try {
+                const response = await fetch('/api/tags', { headers: getAuthHeaders() });
+
+                if (response.status === 401) {
+                    logout();
+                    return;
+                }
+
+                const data = await response.json();
+                setTagOptions(data.tag_ids || []);
+            } catch (error) {
+                console.error('Error loading tags:', error);
+            }
+        }
+
+        async function loadTagAnalysis() {
+            const tagId = document.getElementById('tag-select').value;
+            currentDisplayedTag = tagId || '';  // Sync displayed tag on manual refresh
+            const days = document.getElementById('days-input').value;
+
+            const startDate = document.getElementById('start-date').value;
+            const endDate = document.getElementById('end-date').value;
+
+            const params = new URLSearchParams();
+            if (startDate) params.set('start_date', startDate);
+            if (endDate) params.set('end_date', endDate);
+            if (!startDate && !endDate) params.set('days', days);
+            
+            let url = tagId 
+                ? `/api/tags/${tagId}/analysis?${params.toString()}`
+                : `/api/analysis?${params.toString()}`;
+
+            // Avoid an "empty" screen while the backend is computing
+            if (!tagId) {
+                setViewMode(true);
+                const tbody = document.getElementById('all-tags-table');
+                tbody.innerHTML = `
+                    <tr>
+                        <td class="px-4 py-6 text-gray-600" colspan="10">Loading all tags…</td>
+                    </tr>
+                `;
+            }
+            
+            try {
+                const response = await fetch(url, { headers: getAuthHeaders() });
+                
+                if (response.status === 401) {
+                    logout();
+                    return;
+                }
+                
+                const data = await response.json();
+                
+                if (tagId) {
+                    setViewMode(false);
+                    updateDashboard(data);
+                } else {
+                    setViewMode(true);
+                    renderAllTagsTable(data.analyses || []);
+                }
+
+                if (data.last_updated) {
+                    document.getElementById('last-updated').textContent = data.last_updated;
+                }
+            } catch (error) {
+                console.error('Error loading analysis:', error);
+            }
+        }
+
+        function updateDashboard(data) {
+            // Update stats
+            document.getElementById('stat-total-days').textContent = data.total_days || '-';
+            document.getElementById('stat-avg-activity').textContent = data.summary?.avg_activity_score?.toFixed(2) || '-';
+            document.getElementById('stat-avg-activity-raw').textContent = (data.summary?.avg_activity_score_raw !== null && data.summary?.avg_activity_score_raw !== undefined)
+                ? Number(data.summary.avg_activity_score_raw).toFixed(2)
+                : '-';
+            document.getElementById('stat-walking').textContent = data.summary?.avg_walking_fraction 
+                ? (data.summary.avg_walking_fraction * 100).toFixed(1) + '%' : '-';
+            document.getElementById('stat-resting').textContent = data.summary?.avg_resting_fraction 
+                ? (data.summary.avg_resting_fraction * 100).toFixed(1) + '%' : '-';
+            document.getElementById('stat-current-activity').textContent = data.current_activity || '-';
+            
+            // Update device info
+            const batteryLevel = data.battery_level || 0;
+            document.getElementById('battery-level').textContent = batteryLevel + '%';
+            document.getElementById('battery-bar').style.width = batteryLevel + '%';
+            document.getElementById('battery-bar').className = `h-4 rounded-full transition-all ${
+                batteryLevel > 50 ? 'bg-green-500' : batteryLevel > 20 ? 'bg-yellow-500' : 'bg-red-500'
+            }`;
+            
+            document.getElementById('signal-strength').textContent = 
+                data.signal_strength ? data.signal_strength + ' dBm' : '-- dBm';
+            document.getElementById('last-reading-time').textContent = data.last_reading_time || '--';
+            document.getElementById('last-updated').textContent = data.last_updated || '-';
+            
+            // Update estrus alert
+            const alertBanner = document.getElementById('estrus-alert-banner');
+            if (data.estrus_detected) {
+                document.getElementById('estrus-alert-details').textContent = 
+                    `Detected on ${data.estrus_date} - Activity Score: ${data.summary?.max_activity_score?.toFixed(2) || 'N/A'}`;
+                alertBanner.classList.remove('hidden');
+            } else {
+                alertBanner.classList.add('hidden');
+            }
+            
+            // Update charts
+            if (data.daily_data) {
+                updateCharts(data.daily_data);
+                updateTable(data.daily_data);
+            }
+        }
+
+        function updateCharts(dailyData) {
+            const dates = dailyData.map(d => d.date);
+            const activityScores = dailyData.map(d => d.activity_score);
+            const estrusFlags = dailyData.map(d => d.estrus_confirmed);
+            
+            // Activity Score Chart
+            if (activityChart) activityChart.destroy();
+            activityChart = new Chart(document.getElementById('activity-chart'), {
+                type: 'line',
+                data: {
+                    labels: dates,
+                    datasets: [{
+                        label: 'Activity Score',
+                        data: activityScores,
+                        borderColor: 'rgb(34, 197, 94)',
+                        backgroundColor: 'rgba(34, 197, 94, 0.1)',
+                        fill: true,
+                        tension: 0.3,
+                        pointBackgroundColor: estrusFlags.map(e => e ? '#ef4444' : 'rgb(34, 197, 94)'),
+                        pointRadius: estrusFlags.map(e => e ? 10 : 3),
+                        pointBorderWidth: estrusFlags.map(e => e ? 3 : 1),
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    plugins: {
+                        legend: { display: false },
+                        tooltip: {
+                            callbacks: {
+                                afterLabel: (context) => {
+                                    if (estrusFlags[context.dataIndex]) {
+                                        return '🚨 ESTRUS DETECTED';
+                                    }
+                                    return '';
+                                }
+                            }
+                        }
+                    },
+                    scales: {
+                        y: { beginAtZero: false }
+                    }
+                }
+            });
+
+            // Activity Breakdown Chart
+            if (breakdownChart) breakdownChart.destroy();
+            breakdownChart = new Chart(document.getElementById('breakdown-chart'), {
+                type: 'bar',
+                data: {
+                    labels: dates,
+                    datasets: [
+                        { label: 'Resting', data: dailyData.map(d => (d.resting_fraction || 0) * 100), backgroundColor: '#8b5cf6' },
+                        { label: 'Eating', data: dailyData.map(d => (d.eating_fraction || 0) * 100), backgroundColor: '#22c55e' },
+                        { label: 'Ruminating', data: dailyData.map(d => (d.ruminating_fraction || 0) * 100), backgroundColor: '#3b82f6' },
+                        { label: 'Walking', data: dailyData.map(d => (d.walking_fraction || 0) * 100), backgroundColor: '#eab308' },
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    scales: {
+                        x: { stacked: true },
+                        y: { stacked: true, max: 100, title: { display: true, text: 'Percentage' } }
+                    }
+                }
+            });
+
+            // Temperature Chart
+            if (temperatureChart) temperatureChart.destroy();
+            temperatureChart = new Chart(document.getElementById('temperature-chart'), {
+                type: 'line',
+                data: {
+                    labels: dates,
+                    datasets: [
+                        {
+                            label: 'Ambient Temp (°C)',
+                            data: dailyData.map(d => d.amb_mean),
+                            borderColor: '#3b82f6',
+                            backgroundColor: 'rgba(59, 130, 246, 0.1)',
+                            fill: false,
+                            tension: 0.3
+                        },
+                        {
+                            label: 'Body Temp (°C)',
+                            data: dailyData.map(d => d.obj_mean),
+                            borderColor: '#ef4444',
+                            backgroundColor: 'rgba(239, 68, 68, 0.1)',
+                            fill: false,
+                            tension: 0.3
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    scales: {
+                        y: { title: { display: true, text: 'Temperature (°C)' } }
+                    }
+                }
+            });
+        }
+
+        function updateTable(dailyData) {
+            const tbody = document.getElementById('data-table');
+            tbody.innerHTML = dailyData.map(d => `
+                <tr class="${d.estrus_confirmed ? 'bg-red-50' : 'hover:bg-gray-50'}">
+                    <td class="px-4 py-3 text-sm">${d.date}</td>
+                    <td class="px-4 py-3 text-sm font-medium">${d.activity_score?.toFixed(2) || '-'}</td>
+                    <td class="px-4 py-3 text-sm">${(d.activity_score_raw !== null && d.activity_score_raw !== undefined) ? Number(d.activity_score_raw).toFixed(2) : '-'}</td>
+                    <td class="px-4 py-3 text-sm">${((d.resting_fraction || 0) * 100).toFixed(1)}%</td>
+                    <td class="px-4 py-3 text-sm">${((d.eating_fraction || 0) * 100).toFixed(1)}%</td>
+                    <td class="px-4 py-3 text-sm">${((d.ruminating_fraction || 0) * 100).toFixed(1)}%</td>
+                    <td class="px-4 py-3 text-sm">${((d.walking_fraction || 0) * 100).toFixed(1)}%</td>
+                    <td class="px-4 py-3 text-sm">
+                        ${d.estrus_confirmed 
+                            ? '<span class="bg-red-500 text-white px-2 py-1 rounded text-xs">🔴 YES</span>' 
+                            : '<span class="text-gray-400">No</span>'}
+                    </td>
+                </tr>
+            `).join('');
+        }
+
+        // ==============================
+        // SETTINGS
+        // ==============================
+        function openSettings() {
+            document.getElementById('settings-modal').classList.remove('hidden');
+        }
+
+        function closeSettings() {
+            document.getElementById('settings-modal').classList.add('hidden');
+        }
+
+        async function saveSettings() {
+            const settings = {
+                ws_refresh_interval: parseInt(document.getElementById('setting-interval').value),
+                rolling_activity_days: parseInt(document.getElementById('setting-rolling').value),
+                estrus_baseline_days: parseInt(document.getElementById('setting-baseline').value),
+                walking_threshold: parseFloat(document.getElementById('setting-walking').value),
+                dominance_ratio_threshold: parseFloat(document.getElementById('setting-dominance').value),
+            };
+
+            try {
+                const response = await fetch('/api/settings', {
+                    method: 'POST',
+                    headers: getAuthHeaders(),
+                    body: JSON.stringify(settings)
+                });
+
+                if (response.status === 403) {
+                    document.getElementById('settings-error').textContent = 'Admin access required';
+                    document.getElementById('settings-error').classList.remove('hidden');
+                    return;
+                }
+
+                if (response.ok) {
+                    closeSettings();
+                    loadTagAnalysis();
+                }
+            } catch (error) {
+                console.error('Error saving settings:', error);
+            }
+        }
+
+        // ==============================
+        // USER MANAGEMENT (ADMIN)
+        // ==============================
+        async function openUsersModal() {
+            document.getElementById('users-modal').classList.remove('hidden');
+            await loadUsers();
+        }
+
+        function closeUsersModal() {
+            document.getElementById('users-modal').classList.add('hidden');
+        }
+
+        async function loadUsers() {
+            try {
+                const response = await fetch('/auth/users', { headers: getAuthHeaders() });
+                if (response.ok) {
+                    const users = await response.json();
+                    renderUsersList(users);
+                }
+            } catch (error) {
+                console.error('Error loading users:', error);
+            }
+        }
+
+        function renderUsersList(users) {
+            const container = document.getElementById('users-list');
+            container.innerHTML = users.map(u => `
+                <div class="flex justify-between items-center p-3 bg-gray-50 rounded">
+                    <div>
+                        <span class="font-medium">${u.username}</span>
+                        <span class="text-sm text-gray-500 ml-2">(${u.role})</span>
+                        ${u.full_name ? `<span class="text-sm text-gray-400 ml-2">- ${u.full_name}</span>` : ''}
+                    </div>
+                    <button onclick="deleteUser('${u.id}')" class="text-red-600 hover:text-red-800 text-sm">
+                        Delete
+                    </button>
+                </div>
+            `).join('');
+        }
+
+        async function createUser() {
+            const userData = {
+                username: document.getElementById('new-username').value,
+                password: document.getElementById('new-password').value,
+                full_name: document.getElementById('new-fullname').value,
+                role: document.getElementById('new-role').value
+            };
+
+            try {
+                const response = await fetch('/auth/register', {
+                    method: 'POST',
+                    headers: getAuthHeaders(),
+                    body: JSON.stringify(userData)
+                });
+
+                if (response.ok) {
+                    document.getElementById('new-username').value = '';
+                    document.getElementById('new-password').value = '';
+                    document.getElementById('new-fullname').value = '';
+                    await loadUsers();
+                } else {
+                    const error = await response.json();
+                    alert(error.detail || 'Failed to create user');
+                }
+            } catch (error) {
+                console.error('Error creating user:', error);
+            }
+        }
+
+        async function deleteUser(userId) {
+            if (!confirm('Are you sure you want to delete this user?')) return;
+
+            try {
+                const response = await fetch(`/auth/users/${userId}`, {
+                    method: 'DELETE',
+                    headers: getAuthHeaders()
+                });
+
+                if (response.ok) {
+                    await loadUsers();
+                } else {
+                    const error = await response.json();
+                    alert(error.detail || 'Failed to delete user');
+                }
+            } catch (error) {
+                console.error('Error deleting user:', error);
+            }
+        }
+
+        // ==============================
+        // TIME DISPLAY
+        // ==============================
+        function updateCurrentTime() {
+            const now = new Date();
+            // Convert to BST (UTC+6)
+            const bstOffset = 6 * 60; // minutes
+            const utc = now.getTime() + (now.getTimezoneOffset() * 60000);
+            const bst = new Date(utc + (bstOffset * 60000));
+            
+            document.getElementById('current-time').textContent = bst.toLocaleString('en-GB', {
+                hour: '2-digit',
+                minute: '2-digit',
+                second: '2-digit',
+                day: '2-digit',
+                month: 'short',
+                year: 'numeric'
+            });
+        }
+
+        // ==============================
+        // INITIALIZATION
+        // ==============================
+        document.addEventListener('DOMContentLoaded', () => {
+            // Initialize the displayed tag tracking
+            currentDisplayedTag = document.getElementById('tag-select').value || '';
+            
+            // Load tags + initial data
+            refreshTags().finally(() => {
+                currentDisplayedTag = document.getElementById('tag-select').value || '';
+                updateWsSubscriptions();
+                loadTagAnalysis();
+            });
+            
+            // Connect WebSocket
+            connectWebSocket();
+            
+            // Update time every second
+            updateCurrentTime();
+            setInterval(updateCurrentTime, 1000);
+            
+            // Add admin button if user is admin
+            if (user.role === 'admin') {
+                const nav = document.querySelector('nav .container');
+                const settingsBtn = nav.querySelector('button:nth-last-child(2)');
+                const usersBtn = document.createElement('button');
+                usersBtn.className = 'bg-green-600 hover:bg-green-500 px-4 py-2 rounded transition';
+                usersBtn.textContent = '👥 Users';
+                usersBtn.onclick = openUsersModal;
+                settingsBtn.parentNode.insertBefore(usersBtn, settingsBtn);
+            }
+        });
+    </script>
+</body>
+</html>
